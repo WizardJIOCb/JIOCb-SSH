@@ -18,6 +18,11 @@ internal static class Launcher
         string config = Path.Combine(root, "los-ssh.lua");
         try
         {
+            if (args.Length == 1 && args[0] == "--new-screen-id")
+            {
+                Console.Write(Guid.NewGuid().ToString("N"));
+                return 0;
+            }
             if (args.Length == 2 && args[0] == "--session-slot")
             {
                 Console.Write(ClaimSessionSlot(int.Parse(args[1])));

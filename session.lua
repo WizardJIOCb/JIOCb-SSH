@@ -40,7 +40,8 @@ local function snapshot(target_for)
         local target = target_for(info.pane:pane_id())
         table.insert(rects, { left = info.left, top = info.top, width = info.width, height = info.height,
           leaf = { kind = target and 'ssh' or 'local', host = target and target.host,
-            port = target and target.port, active = info.is_active } })
+            port = target and target.port, persistent = target and target.persistent,
+            screen_id = target and target.screen_id, active = info.is_active } })
         zoomed = zoomed or info.is_zoomed
       end
       if #rects == 0 then return end
@@ -69,6 +70,9 @@ local function valid_tree(node, parse_address)
   if type(node) ~= 'table' then return false end
   if node.kind == 'local' then return true end
   if node.kind == 'ssh' then
+    if node.persistent ~= nil and type(node.persistent) ~= 'boolean' then return false end
+    if node.screen_id ~= nil and (type(node.screen_id) ~= 'string' or #node.screen_id ~= 32
+      or not node.screen_id:match('^[0-9a-f]+$') or node.persistent == false) then return false end
     if type(node.host) ~= 'string' or node.host:find('%s') then return false end
     if node.port ~= nil and (type(node.port) ~= 'string' or not node.port:match('^%d+$')) then return false end
     return parse_address(node.host .. (node.port and ' ' .. node.port or '')) ~= nil
@@ -128,7 +132,9 @@ function M.install(target_for, command_for, remember, parse_address)
     local active
     local function populate(node, pane)
       if node.kind then
-        if node.kind == 'ssh' then remember(pane, { host = node.host, port = node.port }) end
+        if node.kind == 'ssh' then
+          remember(pane, { host = node.host, port = node.port, persistent = node.persistent, screen_id = node.screen_id })
+        end
         if node.active then active = pane end
       else
         local split = command(first_leaf(node.second))

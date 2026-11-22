@@ -34,6 +34,18 @@ local function session(pane_id)
   return wez.GLOBAL['ssh_' .. pane_id]
 end
 
+local function screen_by_default(host)
+  local dir = os.getenv('LOS_SSH_SESSION_DIR') or (os.getenv('LOCALAPPDATA') .. '/LosSSH')
+  local file = io.open(dir .. '/persistent-hosts.txt', 'r')
+  if not file then return false end
+  local matched = false
+  for line in file:lines() do
+    if line:match('^%s*(.-)%s*$'):lower() == host:lower() then matched = true break end
+  end
+  file:close()
+  return matched
+end
+
 local function command_for(target)
   local command = { cwd = wez.home_dir, args = local_shell, domain = 'DefaultDomain' }
   if target then
@@ -46,8 +58,23 @@ local function command_for(target)
       table.insert(command.args, '-p')
       table.insert(command.args, target.port)
     end
+    if target.persistent == nil then target.persistent = target.screen_id ~= nil or screen_by_default(target.host) end
+    if target.persistent then
+      if not target.screen_id then
+        local ok, id = wez.run_child_process { wez.config_dir .. '/Лось SSH.exe', '--new-screen-id' }
+        assert(ok, 'Не удалось создать идентификатор сеанса Screen')
+        target.screen_id = id
+      end
+      assert(type(target.screen_id) == 'string' and #target.screen_id == 32
+        and target.screen_id:match('^[0-9a-f]+$'), 'Invalid Screen session ID')
+      table.insert(command.args, '-t')
+    end
     table.insert(command.args, '--')
     table.insert(command.args, target.host)
+    if target.persistent then
+      table.insert(command.args, [[sh -c 'if command -v screen >/dev/null 2>&1; then exec screen -U -d -R -S los-]]
+        .. target.screen_id .. [[; fi; echo "GNU Screen unavailable. Starting a regular SSH shell."; exec "${SHELL:-/bin/sh}" -l']])
+    end
   end
   return command
 end
@@ -89,19 +116,19 @@ package.path = wez.config_dir .. '/?.lua;' .. package.path
 checkpoint = require('session').install(session, command_for, remember, parse_address)
 cfg.status_update_interval = 500
 
-local function manual(window, pane, direction)
+local function manual(window, pane, direction, persistent)
   window:perform_action(act.PromptInputLine {
     description = 'SSH   ·   user@host [порт]   ·   например dev@server 2222',
     action = wez.action_callback(function(w, p, line)
       if not line then return end
       local target = parse_address(line)
-      if target then open_session(w, p, direction, target)
+      if target then target.persistent = persistent; open_session(w, p, direction, target)
       else w:toast_notification('Лось SSH', 'Введите хост или user@host и, при необходимости, порт через пробел.', nil, 4500) end
     end),
   }, pane)
 end
 
-local function pick_host(window, pane, direction)
+local function pick_host(window, pane, direction, persistent)
   local choices = { { id = ':manual', label = 'Ввести адрес SSH…' } }
   local ok, hosts
   if ssh_config and ssh_config ~= '' then
@@ -121,14 +148,18 @@ local function pick_host(window, pane, direction)
     title = 'SSH-подключения', fuzzy = true, fuzzy_description = 'Найти сервер  ›  ',
     choices = choices,
     action = wez.action_callback(function(w, p, id)
-      if id == ':manual' then manual(w, p, direction)
-      elseif id then open_session(w, p, direction, { host = id }) end
+      if id == ':manual' then manual(w, p, direction, persistent)
+      elseif id then open_session(w, p, direction, { host = id, persistent = persistent }) end
     end),
   }, pane)
 end
 
 local function split(direction)
-  return wez.action_callback(function(w, p) open_session(w, p, direction, session(p:pane_id())) end)
+  return wez.action_callback(function(w, p)
+    local old = session(p:pane_id())
+    local target = old and { host = old.host, port = old.port, persistent = old.persistent }
+    open_session(w, p, direction, target)
+  end)
 end
 local ssh_tab = wez.action_callback(function(w, p) pick_host(w, p) end)
 local ssh_right = wez.action_callback(function(w, p) pick_host(w, p, 'Right') end)
@@ -143,6 +174,8 @@ local rename = act.PromptInputLine {
 }
 local items = {
   { 'ssh', 'SSH-подключение', ssh_tab }, { 'local', 'Новая вкладка PowerShell', new_tab },
+  { 'screen', 'SSH с сохранением процессов (GNU Screen)', wez.action_callback(function(w, p) pick_host(w, p, nil, true) end) },
+  { 'plain', 'Обычное SSH-подключение', wez.action_callback(function(w, p) pick_host(w, p, nil, false) end) },
   { 'right', 'Разделить вправо', right }, { 'down', 'Разделить вниз', down },
   { 'other', 'Другой SSH-сервер справа', ssh_right }, { 'zoom', 'Развернуть / свернуть панель', zoom },
   { 'rename', 'Переименовать вкладку', rename }, { 'find', 'Найти в выводе', act.Search 'CurrentSelectionOrEmptyString' },
